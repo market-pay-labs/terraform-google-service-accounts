@@ -90,3 +90,13 @@ variable "disabled" {
   description = "A map of service account names to a boolean value indicating whether the service account should be disabled. Service accounts not in this map will be enabled by default."
   default     = {}
 }
+
+variable "service_accounts" {
+  description = "Map of service accounts with account_id, display_name and description"
+  type = map(object({
+    account_id   = string
+    display_name = optional(string)
+    description  = optional(string)
+  }))
+  default = {}
+}

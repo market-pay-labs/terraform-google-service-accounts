@@ -15,15 +15,40 @@
  */
 
 locals {
-  account_billing       = var.grant_billing_role && var.billing_account_id != ""
-  org_billing           = var.grant_billing_role && var.billing_account_id == "" && var.org_id != ""
-  prefix                = var.prefix != "" ? "${var.prefix}-" : ""
-  xpn                   = var.grant_xpn_roles && var.org_id != ""
+  account_billing = var.grant_billing_role && var.billing_account_id != ""
+  org_billing     = var.grant_billing_role && var.billing_account_id == "" && var.org_id != ""
+  prefix          = var.prefix != "" ? "${var.prefix}-" : ""
+  xpn             = var.grant_xpn_roles && var.org_id != ""
+
+  # New mode: service_accounts map
+  # Legacy mode: names list
+  service_accounts_map = length(var.service_accounts) > 0 ? {
+    for key, sa in var.service_accounts : key => {
+      account_id = sa.account_id
+      display_name = sa.display_name != null && sa.display_name != "" ? sa.display_name : (
+        var.display_name != "" ? var.display_name : sa.account_id
+      )
+
+      description = sa.description != null && sa.description != "" ? sa.description : var.description
+      disabled    = lookup(var.disabled, key, false)
+    }
+    } : {
+    for name in var.names : name => {
+      account_id   = "${local.prefix}${lower(name)}"
+      display_name = var.display_name
+      description  = index(var.names, name) >= length(var.descriptions) ? var.description : element(var.descriptions, index(var.names, name))
+      disabled     = lookup(var.disabled, name, false)
+    }
+  }
+
+  service_account_keys = toset(keys(local.service_accounts_map))
+
   service_accounts_list = [for account in google_service_account.service_accounts : account]
   emails_list           = [for account in local.service_accounts_list : account.email]
   iam_emails_list       = [for email in local.emails_list : "serviceAccount:${email}"]
-  names                 = toset(var.names)
-  name_role_pairs       = setproduct(local.names, toset(var.project_roles))
+
+  name_role_pairs = setproduct(local.service_account_keys, toset(var.project_roles))
+
   project_roles_map_data = zipmap(
     [for pair in local.name_role_pairs : "${pair[0]}-${pair[1]}"],
     [for pair in local.name_role_pairs : {
@@ -35,12 +60,13 @@ locals {
 
 # create service accounts
 resource "google_service_account" "service_accounts" {
-  for_each     = local.names
-  account_id   = "${local.prefix}${lower(each.value)}"
-  display_name = var.display_name
-  description  = index(var.names, each.value) >= length(var.descriptions) ? var.description : element(var.descriptions, index(var.names, each.value))
+  for_each = local.service_accounts_map
+
+  account_id   = each.value.account_id
+  display_name = each.value.display_name
+  description  = each.value.description
   project      = var.project_id
-  disabled     = lookup(var.disabled, each.value, false)
+  disabled     = each.value.disabled
 }
 
 # common roles
@@ -68,7 +94,7 @@ resource "google_project_iam_member" "project-roles" {
 
 # conditionally assign billing user role at the org level
 resource "google_organization_iam_member" "billing_user" {
-  for_each = local.org_billing ? local.names : toset([])
+  for_each = local.org_billing ? local.service_account_keys : toset([])
   org_id   = var.org_id
   role     = "roles/billing.user"
   member   = "serviceAccount:${google_service_account.service_accounts[each.value].email}"
@@ -76,7 +102,7 @@ resource "google_organization_iam_member" "billing_user" {
 
 # conditionally assign billing user role on a specific billing account
 resource "google_billing_account_iam_member" "billing_user" {
-  for_each           = local.account_billing ? local.names : toset([])
+  for_each           = local.account_billing ? local.service_account_keys : toset([])
   billing_account_id = var.billing_account_id
   role               = "roles/billing.user"
   member             = "serviceAccount:${google_service_account.service_accounts[each.value].email}"
@@ -86,14 +112,14 @@ resource "google_billing_account_iam_member" "billing_user" {
 # ref: https://cloud.google.com/vpc/docs/shared-vpc
 
 resource "google_organization_iam_member" "xpn_admin" {
-  for_each = local.xpn ? local.names : toset([])
+  for_each = local.xpn ? local.service_account_keys : toset([])
   org_id   = var.org_id
   role     = "roles/compute.xpnAdmin"
   member   = "serviceAccount:${google_service_account.service_accounts[each.value].email}"
 }
 
 resource "google_organization_iam_member" "organization_viewer" {
-  for_each = local.xpn ? local.names : toset([])
+  for_each = local.xpn ? local.service_account_keys : toset([])
   org_id   = var.org_id
   role     = "roles/resourcemanager.organizationViewer"
   member   = "serviceAccount:${google_service_account.service_accounts[each.value].email}"
@@ -101,6 +127,6 @@ resource "google_organization_iam_member" "organization_viewer" {
 
 # keys
 resource "google_service_account_key" "keys" {
-  for_each           = var.generate_keys ? local.names : toset([])
+  for_each           = var.generate_keys ? local.service_account_keys : toset([])
   service_account_id = google_service_account.service_accounts[each.value].email
 }
